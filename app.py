@@ -28,8 +28,7 @@ CORS(app)
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
-    # Mode Railway : utiliser DATABASE_URL
-    # Railway utilise "postgres://" mais SQLAlchemy/psycopg2 a besoin de "postgresql://"
+    
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
     
@@ -55,28 +54,39 @@ else:
 # ─────────────────────────────────────────────
 # CONFIGURATION CINETPAY (CORRIGÉE)
 # ─────────────────────────────────────────────
-CINETPAY_API_KEY = os.getenv("CINETPAY_API_KEY", "")
-CINETPAY_SITE_ID = os.getenv("CINETPAY_SITE_ID", "")
-CINETPAY_PAY_URL = "https://api-checkout.cinetpay.com/v2/payment"
-CINETPAY_CHK_URL = "https://api-checkout.cinetpay.com/v2/payment/check"
+# APRÈS ✅
+CINETPAY_API_KEY  = os.getenv("CINETPAY_API_KEY", "")
+CINETPAY_PAY_URL  = "https://api-checkout.cinetpay.com/v2/payment"
+CINETPAY_CHK_URL  = "https://api-checkout.cinetpay.com/v2/payment/check"
 
-# Base URL (à configurer dans .env)
-APP_BASE_URL = os.getenv("APP_BASE_URL", "https://fabla-backend-production.up.railway.app/")
+# SITE_ID → entier obligatoire
+try:
+    CINETPAY_SITE_ID = int(os.getenv("CINETPAY_SITE_ID", "0"))
+except ValueError:
+    raise RuntimeError("CINETPAY_SITE_ID doit être un nombre entier")
 
-# URLs de redirection construites dynamiquement
+# APP_BASE_URL → retirer le slash final
+APP_BASE_URL = os.getenv(
+    "APP_BASE_URL",
+    "https://fabla-backend-production.up.railway.app"
+).rstrip("/")    # ← sécurité anti double-slash
+
 RETURN_URL = f"{APP_BASE_URL}/paiement/succes"
 CANCEL_URL = f"{APP_BASE_URL}/paiement/echec"
 NOTIFY_URL = f"{APP_BASE_URL}/api/paiement/notification"
 
-# Vérification que les clés sont présentes
-if not CINETPAY_API_KEY or not CINETPAY_SITE_ID:
-    print("⚠️ ATTENTION: Les clés CinetPay ne sont pas configurées dans le fichier .env")
+if not CINETPAY_API_KEY:
+    print("⚠️  CINETPAY_API_KEY manquante")
+if CINETPAY_SITE_ID == 0:
+    print("⚠️  CINETPAY_SITE_ID manquant")
 
 print(f"✅ Configuration chargée:")
-print(f"   - DB: {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}")
+print(f"   - DB:       {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}")
 print(f"   - CinetPay: {CINETPAY_PAY_URL}")
 print(f"   - Base URL: {APP_BASE_URL}")
-
+print(f"   - RETURN  : {RETURN_URL}")
+print(f"   - NOTIFY  : {NOTIFY_URL}")
+print(f"   - SITE_ID : {CINETPAY_SITE_ID} (type: {type(CINETPAY_SITE_ID).__name__})")
 # ─────────────────────────────────────────────
 #  HELPERS DB
 # ─────────────────────────────────────────────
@@ -1098,6 +1108,7 @@ def test_cinetpay():
 # ─────────────────────────────────────────────
 #  LANCEMENT
 # ─────────────────────────────────────────────
+init_db()
 if __name__ == "__main__":
-    init_db()
+    
     app.run(debug=True, host="0.0.0.0", port=5000)
