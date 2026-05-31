@@ -15,6 +15,8 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 load_dotenv()
 
+import urllib.parse
+
 
 app = Flask(__name__)
 CORS(app)
@@ -22,14 +24,34 @@ CORS(app)
 # ─────────────────────────────────────────────
 # CONFIGURATION BASE DE DONNÉES (CORRIGÉE)
 # ─────────────────────────────────────────────
-DB_CONFIG = {
-    "host":     os.getenv("DB_HOST"),
-    "port":     int(os.getenv("DB_PORT", "5432")),
-    "dbname":   os.getenv("DB_NAME"),
-    "user":     os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-}
+# Vérifier si on est sur Railway (présence de DATABASE_URL)
+DATABASE_URL = os.getenv("DATABASE_URL")
 
+if DATABASE_URL:
+    # Mode Railway : utiliser DATABASE_URL
+    # Railway utilise "postgres://" mais SQLAlchemy/psycopg2 a besoin de "postgresql://"
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    
+    # Pour psycopg2, parse l'URL
+    result = urllib.parse.urlparse(DATABASE_URL)
+    DB_CONFIG = {
+        "host": result.hostname,
+        "port": result.port or 5432,
+        "dbname": result.path[1:],  # enlève le premier slash
+        "user": result.username,
+        "password": result.password,
+        "sslmode": "require"  # Important pour Railway
+    }
+else:
+    # Mode développement local : utiliser les variables individuelles
+    DB_CONFIG = {
+        "host": os.getenv("DB_HOST", "localhost"),
+        "port": int(os.getenv("DB_PORT", "5432")),
+        "dbname": os.getenv("DB_NAME", "fabla_db"),
+        "user": os.getenv("DB_USER", "fabla_user"),
+        "password": os.getenv("DB_PASSWORD", ""),
+    }
 # ─────────────────────────────────────────────
 # CONFIGURATION CINETPAY (CORRIGÉE)
 # ─────────────────────────────────────────────
