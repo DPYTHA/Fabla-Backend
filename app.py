@@ -61,7 +61,7 @@ CINETPAY_PAY_URL = "https://api-checkout.cinetpay.com/v2/payment"
 CINETPAY_CHK_URL = "https://api-checkout.cinetpay.com/v2/payment/check"
 
 # Base URL (à configurer dans .env)
-APP_BASE_URL = os.getenv("APP_BASE_URL", "https://web-production-1ee96.up.railway.app/")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "https://fabla-backend-production.up.railway.app/")
 
 # URLs de redirection construites dynamiquement
 RETURN_URL = f"{APP_BASE_URL}/paiement/succes"
