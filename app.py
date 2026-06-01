@@ -307,6 +307,7 @@ def auth_admin():
         return jsonify({"error": str(e)}), 500
  
  
+
 # ═══════════════════════════════════════════════════════════
 #  PAIEMENT CINETPAY  ←  COMPLET
 # ═══════════════════════════════════════════════════════════
@@ -374,15 +375,41 @@ def initier_paiement():
         "customer_zip":            "00225",
     }
  
+    # ── Corrections de types imposées par CinetPay ──────────────────
+    # site_id DOIT être un entier
+    try:
+        payload["site_id"] = int(payload["site_id"])
+    except (ValueError, TypeError):
+        pass  # on laisse tel quel si la conversion échoue
+ 
+    # amount DOIT être un entier >= 100
+    payload["amount"] = int(payload["amount"])
+ 
+    # Tous les champs customer_* doivent être des strings non vides
+    for k in ["customer_name","customer_surname","customer_email",
+              "customer_phone_number","customer_address",
+              "customer_city","customer_country","customer_state","customer_zip"]:
+        if not payload.get(k):
+            payload[k] = "N/A"
+ 
+    # ── Log complet du payload (aide au débogage) ────────────────
+    import json as _json
+    print("=" * 60)
+    print("[CINETPAY] Payload envoyé :")
+    print(_json.dumps({k: v for k, v in payload.items() if k != "apikey"}, indent=2, ensure_ascii=False))
+    print("=" * 60)
+ 
     try:
         resp   = http_req.post(CINETPAY_PAY_URL, json=payload, timeout=15)
         result = resp.json()
         code   = str(result.get("code", ""))
  
+        # ── Log réponse complète ──────────────────────────────────
+        print(f"[CINETPAY] Réponse : {_json.dumps(result, ensure_ascii=False)}")
+ 
         if code == "201":
             payment_url = result["data"]["payment_url"]
  
-            # Enregistrer la transaction en base (statut: en_attente)
             conn = get_conn()
             cur  = conn.cursor()
             cur.execute("""
@@ -402,7 +429,6 @@ def initier_paiement():
             }), 200
  
         else:
-            # Log complet pour le débogage
             print(f"[CINETPAY ERROR] code={code} | message={result.get('message')} | data={result.get('data')}")
             return jsonify({
                 "error":   result.get("message", "Erreur CinetPay"),
@@ -414,14 +440,15 @@ def initier_paiement():
     except http_req.exceptions.Timeout:
         return jsonify({"error": "CinetPay ne répond pas (timeout). Réessayez."}), 504
     except Exception as e:
+        print(f"[CINETPAY EXCEPTION] {str(e)}")
         return jsonify({"error": f"Erreur: {str(e)}"}), 500
  
  
 @app.route("/api/paiement/verifier", methods=["POST"])
 def verifier_paiement():
     """
-    Étape 2 — Après redirection WebView, le frontend demande la vérification.
-    CinetPay confirme si le paiement est ACCEPTED ou non.
+    Vérification du paiement auprès de CinetPay.
+    Gère tous les formats de réponse possibles (code "00", "0", 0, status case-insensitive).
     """
     d              = request.get_json()
     transaction_id = d.get("transaction_id", "").strip()
@@ -429,7 +456,7 @@ def verifier_paiement():
     if not transaction_id:
         return jsonify({"error": "transaction_id requis"}), 400
  
-    # Vérifier d'abord en base (si webhook déjà reçu)
+    # ── 1. Vérifier en base d'abord (si webhook déjà reçu) ──────
     try:
         conn = get_conn()
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -438,13 +465,16 @@ def verifier_paiement():
         cur.close(); conn.close()
  
         if trans and trans["statut"] == "paye":
-            # Déjà confirmé via webhook → pas besoin d'appeler CinetPay
-            return jsonify({"success": True, "paye": True, "statut": "ACCEPTED", "source": "cache"}), 200
+            print(f"[VERIF] ✅ Paiement déjà confirmé en base : {transaction_id}")
+            return jsonify({
+                "success": True, "paye": True,
+                "statut": "ACCEPTED", "source": "cache"
+            }), 200
  
-    except Exception:
-        pass  # si erreur DB, on continue avec l'API CinetPay
+    except Exception as e:
+        print(f"[VERIF] Erreur lecture base : {e}")
  
-    # Appel API CinetPay pour vérification fraîche
+    # ── 2. Appel API CinetPay ────────────────────────────────────
     payload = {
         "apikey":         CINETPAY_API_KEY,
         "site_id":        CINETPAY_SITE_ID,
@@ -452,47 +482,76 @@ def verifier_paiement():
     }
  
     try:
-        resp   = http_req.post(CINETPAY_CHK_URL, json=payload, timeout=15)
+        resp   = http_req.post(CINETPAY_CHK_URL, json=payload, timeout=20)
         result = resp.json()
-        code   = str(result.get("code", ""))
-        data   = result.get("data", {})
-        statut = data.get("status", "")
  
-        paye = (code == "00" and statut == "ACCEPTED")
+        # ── Log COMPLET de la réponse CinetPay ──────────────────
+        print(f"[VERIF] Réponse CinetPay brute : {result}")
  
-        # Mettre à jour en base
-        conn = get_conn()
-        cur  = conn.cursor()
-        cur.execute("""
-            UPDATE transactions
-            SET statut = %s, cinetpay_ref = %s, updated_at = NOW()
-            WHERE transaction_id = %s
-        """, ("paye" if paye else "echec", data.get("payment_method"), transaction_id))
-        conn.commit()
-        cur.close(); conn.close()
+        # Normalisation robuste du code et du statut
+        code   = str(result.get("code", "")).strip()
+        data_r = result.get("data") or {}
+        statut = str(data_r.get("status", "")).strip().upper()
+        moyen  = data_r.get("payment_method", "—")
+ 
+        print(f"[VERIF] code={code!r} | statut={statut!r} | moyen={moyen!r}")
+ 
+        # CinetPay peut renvoyer "00", "0", 0 selon les versions
+        code_ok   = code in ("00", "0", "000")
+        statut_ok = statut in ("ACCEPTED", "APPROVED", "SUCCESS")
+ 
+        paye = code_ok and statut_ok
+ 
+        print(f"[VERIF] code_ok={code_ok} | statut_ok={statut_ok} | paye={paye}")
+ 
+        # ── Mettre à jour en base ────────────────────────────────
+        try:
+            conn = get_conn()
+            cur  = conn.cursor()
+            cur.execute("""
+                UPDATE transactions
+                SET statut = %s, cinetpay_ref = %s, updated_at = NOW()
+                WHERE transaction_id = %s
+            """, ("paye" if paye else "en_attente", moyen, transaction_id))
+            conn.commit()
+            cur.close(); conn.close()
+        except Exception as e:
+            print(f"[VERIF] Erreur mise à jour base : {e}")
  
         return jsonify({
-            "success": True,
-            "paye":    paye,
-            "statut":  statut,
-            "code":    code,
-            "moyen":   data.get("payment_method", "—"),
+            "success":     True,
+            "paye":        paye,
+            "statut":      statut,
+            "code":        code,
+            "moyen":       moyen,
+            "raw_response": result,  # pour débogage frontend
         }), 200
  
     except http_req.exceptions.Timeout:
-        return jsonify({"error": "CinetPay ne répond pas (timeout)."}), 504
+        return jsonify({"error": "CinetPay timeout"}), 504
     except Exception as e:
+        print(f"[VERIF] Exception : {e}")
         return jsonify({"error": str(e)}), 500
  
  
-@app.route("/api/paiement/notification", methods=["POST"])
+@app.route("/api/paiement/notification", methods=["GET", "POST"])
 def notification_cinetpay():
     """
     Webhook CinetPay — appelé automatiquement par CinetPay après paiement.
-    CinetPay envoie les données en form-data OU JSON selon la version.
+    CinetPay teste parfois en GET avant d'envoyer le POST.
+    Accepte JSON, form-data et query params.
     """
-    # CinetPay peut envoyer en form-data ou JSON
-    d = request.get_json(silent=True) or request.form.to_dict()
+    # Répondre immédiatement au GET (test de disponibilité CinetPay)
+    if request.method == "GET":
+        print("[CINETPAY WEBHOOK] Test GET reçu — serveur joignable ✅")
+        return jsonify({"status": "ok", "service": "FABLA"}), 200
+ 
+    # POST : récupérer les données (JSON ou form-data ou query string)
+    d = (request.get_json(silent=True)
+         or request.form.to_dict()
+         or request.args.to_dict())
+ 
+    print(f"[CINETPAY WEBHOOK] Données reçues : {d}")
  
     transaction_id = d.get("cpm_trans_id") or d.get("transaction_id", "")
     cpm_result     = d.get("cpm_result", "")
@@ -582,7 +641,6 @@ def lier_transaction_colis(transaction_id: str, colis_id: int):
         cur.close(); conn.close()
     except Exception:
         pass
- 
  
 # ═══════════════════════════════════════════════════════════
 #  CLIENT — Créer des commandes (paiement requis)
