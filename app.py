@@ -687,6 +687,11 @@ def health():
     return jsonify({"status": "ok", "app": "FABLA v2", "ville": "Assinie-Mafia"}), 200
 
 
-if __name__ == "__main__":
+try:
     init_db()
+    print("✅ Base de données initialisée")
+except Exception as e:
+    print(f"⚠️ Erreur init DB: {e}")
+
+if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
