@@ -650,18 +650,29 @@ def creer_livreur():
     data      = request.get_json()
     telephone = data.get("telephone","").strip()
     nom       = data.get("nom","").strip()
-    if not telephone or not nom:
-        return jsonify({"error": "telephone et nom requis"}), 400
+    pin       = data.get("pin", "").strip()  # ← Changement: récupérer 'pin' au lieu de rien
+    
+    if not telephone or not nom or not pin:
+        return jsonify({"error": "telephone, nom et pin requis"}), 400
+    
+    if len(pin) < 4:
+        return jsonify({"error": "Le PIN doit contenir au moins 4 caractères"}), 400
+    
     try:
-        code_liv = gen_code_livreur()
+        code_liv = pin  # ← Utiliser le PIN fourni comme code_livreur
         conn = get_conn()
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
         cur.execute("""
-            INSERT INTO users (telephone, role, nom, code_livreur)
-            VALUES (%s,'livreur',%s,%s) RETURNING *
+            INSERT INTO users (telephone, role, nom, code_livreur, actif)
+            VALUES (%s, 'livreur', %s, %s, TRUE) RETURNING *
         """, (telephone, nom, code_liv))
+        
         livreur = dict(cur.fetchone())
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
+        
         livreur.pop('password_hash', None)
         return jsonify({
             "success": True,
@@ -669,6 +680,7 @@ def creer_livreur():
             "code_livreur": code_liv,
             "message": f"Livreur créé. Code d'accès : {code_liv}"
         }), 201
+        
     except psycopg2.errors.UniqueViolation:
         return jsonify({"error": "Ce numéro existe déjà"}), 409
     except Exception as e:
