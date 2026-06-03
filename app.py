@@ -495,6 +495,64 @@ def admin_stats():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# Ajoutez après les autres routes admin
+
+@app.route("/api/admin/commandes", methods=["GET"])
+def admin_commandes():
+    """Alias pour /api/admin/colis (compatibilité frontend)"""
+    return admin_all_colis()
+
+@app.route("/api/admin/colis/<code>/confirmer-paiement", methods=["PUT"])
+def confirmer_paiement(code):
+    """Alias pour assigner un livreur (compatibilité frontend)"""
+    data = request.get_json()
+    livreur_id = data.get("livreur_id")
+    
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    # Mettre à jour le statut et assigner le livreur
+    cur.execute(
+        "UPDATE colis SET livreur_id=%s, statut='confirme', updated_at=NOW() "
+        "WHERE code_suivi=%s RETURNING *",
+        (livreur_id, code.upper())
+    )
+    colis = cur.fetchone()
+    
+    if not colis:
+        return jsonify({"error": "Colis introuvable"}), 404
+    
+    add_suivi(conn, colis["id"], "confirme",
+              f"Paiement confirmé. Livreur assigné: {livreur_id}", livreur_id)
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    return jsonify({"success": True, "colis": dict(colis)}), 200
+
+@app.route("/api/admin/livreurs/<int:livreur_id>/toggle", methods=["PUT"])
+def toggle_livreur(livreur_id):
+    """Alias pour activer/désactiver livreur"""
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+    cur.execute("SELECT actif FROM users WHERE id=%s AND role='livreur'", (livreur_id,))
+    livreur = cur.fetchone()
+    
+    if not livreur:
+        return jsonify({"error": "Livreur introuvable"}), 404
+    
+    nouvel_etat = not livreur['actif']
+    cur.execute(
+        "UPDATE users SET actif=%s WHERE id=%s RETURNING id, nom, actif",
+        (nouvel_etat, livreur_id)
+    )
+    result = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    
+    return jsonify({"success": True, "livreur": dict(result)}), 200
 
 # ── Tous les colis ───────────────────────────
 @app.route("/api/admin/colis", methods=["GET"])
@@ -641,7 +699,7 @@ def liste_livreurs():
 
 # ── Désactiver / réactiver un livreur ────────
 @app.route("/api/admin/livreurs/<int:livreur_id>/actif", methods=["PUT"])
-def toggle_livreur(livreur_id):
+def toggle_livreur1(livreur_id):
     data  = request.get_json()
     actif = data.get("actif", True)
     try:
