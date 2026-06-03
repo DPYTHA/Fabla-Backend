@@ -729,6 +729,160 @@ def toggle_livreur1(livreur_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ═══════════════════════════════════════════════
+#  LIVREUR — STATISTIQUES ET GAINS
+# ═══════════════════════════════════════════════
+
+@app.route("/api/livreur/<int:livreur_id>/missions", methods=["GET"])
+def get_livreur_missions(livreur_id):
+    """Récupère toutes les missions du livreur (actives et terminées)"""
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT c.*, u.telephone AS client_tel, u.nom AS client_nom
+            FROM colis c
+            JOIN users u ON u.id = c.client_id
+            WHERE c.livreur_id = %s
+            ORDER BY c.created_at DESC
+        """, (livreur_id,))
+        missions = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify({"success": True, "missions": [dict(m) for m in missions]}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/livreur/<int:livreur_id>/stats", methods=["GET"])
+def get_livreur_stats(livreur_id):
+    """Statistiques et gains du livreur"""
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Missions terminées
+        cur.execute("""
+            SELECT COUNT(*) as total, COALESCE(SUM(frais_livraison), 0) as total_frais
+            FROM colis 
+            WHERE livreur_id = %s AND statut = 'livre'
+        """, (livreur_id,))
+        result = cur.fetchone()
+        
+        total_livraisons = result['total'] or 0
+        total_frais = float(result['total_frais'] or 0)
+        
+        # Commission livreur (60%)
+        gains_totaux = total_frais * 0.6
+        
+        # Missions en cours
+        cur.execute("""
+            SELECT COUNT(*) as encours
+            FROM colis 
+            WHERE livreur_id = %s AND statut NOT IN ('livre', 'annule')
+        """, (livreur_id,))
+        encours = cur.fetchone()['encours'] or 0
+        
+        # Missions aujourd'hui
+        cur.execute("""
+            SELECT COUNT(*) as aujourdhui, COALESCE(SUM(frais_livraison), 0) as frais_aujourdhui
+            FROM colis 
+            WHERE livreur_id = %s 
+            AND statut = 'livre'
+            AND DATE(updated_at) = CURRENT_DATE
+        """, (livreur_id,))
+        today = cur.fetchone()
+        
+        gains_aujourdhui = float(today['frais_aujourdhui'] or 0) * 0.6
+        
+        cur.close()
+        conn.close()
+        
+        # Détail des missions pour le graphique
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT 
+                DATE(created_at) as date,
+                COUNT(*) as nb_livraisons,
+                COALESCE(SUM(frais_livraison), 0) as frais
+            FROM colis 
+            WHERE livreur_id = %s AND statut = 'livre'
+            GROUP BY DATE(created_at)
+            ORDER BY date DESC
+            LIMIT 30
+        """, (livreur_id,))
+        historique = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "stats": {
+                "total_livraisons": total_livraisons,
+                "gains_totaux": round(gains_totaux, 0),
+                "encours": encours,
+                "gains_aujourdhui": round(gains_aujourdhui, 0),
+                "livraisons_aujourdhui": today['aujourdhui'] or 0,
+                "historique": [dict(h) for h in historique]
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/livreur/colis/<code>/statut", methods=["PUT"])
+def livreur_update_status(code):
+    """Mise à jour du statut en temps réel"""
+    data = request.get_json()
+    statut = data.get("statut", "").strip()
+    message = data.get("message", "")
+    livreur_id = data.get("livreur_id")
+    
+    STATUTS_AUTORISES = ["en_route_recuperation", "recupere", "en_livraison", "livre"]
+    
+    if statut not in STATUTS_AUTORISES:
+        return jsonify({"error": f"Statut invalide. Autorisés: {STATUTS_AUTORISES}"}), 400
+    
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Vérifier que le colis appartient au livreur
+        cur.execute(
+            "SELECT * FROM colis WHERE code_suivi = %s AND livreur_id = %s",
+            (code.upper(), livreur_id)
+        )
+        colis = cur.fetchone()
+        
+        if not colis:
+            return jsonify({"error": "Colis non trouvé ou non assigné"}), 404
+        
+        # Mettre à jour le statut
+        cur.execute(
+            "UPDATE colis SET statut = %s, updated_at = NOW() WHERE id = %s RETURNING *",
+            (statut, colis['id'])
+        )
+        updated = cur.fetchone()
+        
+        # Ajouter au suivi
+        add_suivi(conn, colis['id'], statut, message or f"Statut mis à jour: {statut}", livreur_id)
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        # Si le colis est livré, mettre à jour les gains
+        if statut == 'livre':
+            gain = float(updated['frais_livraison'] or 0) * 0.6
+        
+        return jsonify({
+            "success": True, 
+            "colis": dict(updated),
+            "gain": gain if statut == 'livre' else None
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 # ── Liste des clients ────────────────────────
 @app.route("/api/admin/clients", methods=["GET"])
