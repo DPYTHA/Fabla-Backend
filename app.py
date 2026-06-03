@@ -95,20 +95,22 @@ def init_db():
         );
     """)
 
-    # Créer un admin par défaut si inexistant
+        # Dans init_db(), après la création des tables
+    # Créer un admin par défaut de façon plus robuste
     cur.execute("SELECT id FROM users WHERE role='admin' LIMIT 1")
     if not cur.fetchone():
-        cur.execute("""
-            INSERT INTO users (telephone, role, nom, password_hash)
-            VALUES ('+2250710069791', 'admin', 'Admin FABLA', %s)
-        """, (hash_pwd('1234'),))
-        print("✅ Admin créé → tel:+2250710069791 / mdp: 1234")
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    print("✅ Tables initialisées.")
-
+        admin_phone = '+2250710069791'
+        admin_password = '1234'
+        admin_password_hash = hash_pwd(admin_password)
+        try:
+            cur.execute("""
+                INSERT INTO users (telephone, role, nom, password_hash, actif)
+                VALUES (%s, 'admin', 'Admin FABLA', %s, TRUE)
+            """, (admin_phone, admin_password_hash))
+            print(f"✅ Admin créé avec succès. Tél: {admin_phone}, MDP: {admin_password}")
+        except Exception as e:
+            print(f"⚠️ Erreur lors de la création de l'admin: {e}")
+        conn.commit()
 
 # ─────────────────────────────────────────────
 # HELPERS
