@@ -709,36 +709,15 @@ def liste_livreurs():
         return jsonify({"error": str(e)}), 500
 
 
-# ── Désactiver / réactiver un livreur ────────
-@app.route("/api/admin/livreurs/<int:livreur_id>/actif", methods=["PUT"])
-def toggle_livreur1(livreur_id):
-    data  = request.get_json()
-    actif = data.get("actif", True)
+# ═══════════════════════════════════════════════
+#  LIVREUR — MES MISSIONS
+# ═══════════════════════════════════════════════
+@app.route("/api/livreur/<int:livreur_id>/missions", methods=["GET"])
+def missions_livreur(livreur_id):
+    """Retourne tous les colis assignés à ce livreur"""
     try:
         conn = get_conn()
         cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(
-            "UPDATE users SET actif=%s WHERE id=%s AND role='livreur' RETURNING id, nom, actif",
-            (actif, livreur_id)
-        )
-        u = cur.fetchone()
-        conn.commit(); cur.close(); conn.close()
-        if not u:
-            return jsonify({"error": "Livreur introuvable"}), 404
-        return jsonify({"success": True, "livreur": dict(u)}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# ═══════════════════════════════════════════════
-#  LIVREUR — STATISTIQUES ET GAINS
-# ═══════════════════════════════════════════════
-
-@app.route("/api/livreur/<int:livreur_id>/missions", methods=["GET"])
-def get_livreur_missions(livreur_id):
-    """Récupère toutes les missions du livreur (actives et terminées)"""
-    try:
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT c.*, u.telephone AS client_tel, u.nom AS client_nom
             FROM colis c
@@ -753,6 +732,49 @@ def get_livreur_missions(livreur_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/livreur/colis/<code>/statut", methods=["PUT"])
+def livreur_update_statut(code):
+    """Le livreur met à jour le statut d'un colis assigné"""
+    data       = request.get_json()
+    statut     = data.get("statut","").strip()
+    message    = data.get("message","")
+    livreur_id = data.get("livreur_id")
+
+    STATUTS_LIVREUR = [
+        "en_route_recuperation", "recupere", "en_livraison", "livre"
+    ]
+    if statut not in STATUTS_LIVREUR:
+        return jsonify({"error": f"Statut non autorisé pour un livreur: {STATUTS_LIVREUR}"}), 400
+
+    try:
+        conn = get_conn()
+        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT * FROM colis WHERE code_suivi=%s AND livreur_id=%s",
+            (code.upper(), livreur_id)
+        )
+        colis = cur.fetchone()
+        if not colis:
+            return jsonify({"error": "Colis introuvable ou non assigné à vous"}), 403
+
+        cur.execute(
+            "UPDATE colis SET statut=%s, updated_at=NOW() WHERE id=%s RETURNING *",
+            (statut, colis["id"])
+        )
+        updated = dict(cur.fetchone())
+        add_suivi(conn, colis["id"], statut,
+                  message or f"Statut mis à jour par livreur: {statut}", livreur_id)
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"success": True, "colis": updated}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ═══════════════════════════════════════════════
+#  LIVREUR — STATISTIQUES ET GAINS
+# ═══════════════════════════════════════════════
+
 @app.route("/api/livreur/<int:livreur_id>/stats", methods=["GET"])
 def get_livreur_stats(livreur_id):
     """Statistiques et gains du livreur"""
@@ -760,7 +782,6 @@ def get_livreur_stats(livreur_id):
         conn = get_conn()
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
-        # Missions terminées
         cur.execute("""
             SELECT COUNT(*) as total, COALESCE(SUM(frais_livraison), 0) as total_frais
             FROM colis 
@@ -770,11 +791,8 @@ def get_livreur_stats(livreur_id):
         
         total_livraisons = result['total'] or 0
         total_frais = float(result['total_frais'] or 0)
-        
-        # Commission livreur (60%)
         gains_totaux = total_frais * 0.6
         
-        # Missions en cours
         cur.execute("""
             SELECT COUNT(*) as encours
             FROM colis 
@@ -782,7 +800,6 @@ def get_livreur_stats(livreur_id):
         """, (livreur_id,))
         encours = cur.fetchone()['encours'] or 0
         
-        # Missions aujourd'hui
         cur.execute("""
             SELECT COUNT(*) as aujourdhui, COALESCE(SUM(frais_livraison), 0) as frais_aujourdhui
             FROM colis 
@@ -794,12 +811,6 @@ def get_livreur_stats(livreur_id):
         
         gains_aujourdhui = float(today['frais_aujourdhui'] or 0) * 0.6
         
-        cur.close()
-        conn.close()
-        
-        # Détail des missions pour le graphique
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT 
                 DATE(created_at) as date,
@@ -812,6 +823,7 @@ def get_livreur_stats(livreur_id):
             LIMIT 30
         """, (livreur_id,))
         historique = cur.fetchall()
+        
         cur.close()
         conn.close()
         
@@ -828,7 +840,7 @@ def get_livreur_stats(livreur_id):
         }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
+    
 @app.route("/api/livreur/colis/<code>/statut", methods=["PUT"])
 def livreur_update_status(code):
     """Mise à jour du statut en temps réel"""
