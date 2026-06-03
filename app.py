@@ -91,7 +91,7 @@ def init_db():
     cur.execute("SELECT id FROM users WHERE role='admin' LIMIT 1")
     if not cur.fetchone():
         admin_phone = '+2250710069791'
-        admin_password = '1234'
+        admin_password = '123456'
         admin_password_hash = hash_pwd(admin_password)
         try:
             cur.execute("""
