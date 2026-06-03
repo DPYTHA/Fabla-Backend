@@ -100,9 +100,9 @@ def init_db():
     if not cur.fetchone():
         cur.execute("""
             INSERT INTO users (telephone, role, nom, password_hash)
-            VALUES ('0000000000', 'admin', 'Admin FABLA', %s)
-        """, (hash_pwd('fabla2024'),))
-        print("✅ Admin créé → tel: 0000000000 / mdp: fabla2024")
+            VALUES ('+2250710069791', 'admin', 'Admin FABLA', %s)
+        """, (hash_pwd('1234'),))
+        print("✅ Admin créé → tel:+2250710069791 / mdp: 1234")
 
     conn.commit()
     cur.close()
