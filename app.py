@@ -72,6 +72,9 @@ def init_db():
             note_supplementaire TEXT,
             statut              VARCHAR(30) DEFAULT 'en_attente',
             frais_livraison     NUMERIC(10,2) DEFAULT 0,
+            frais_service       NUMERIC(10,2) DEFAULT 0,
+            distance_metres     NUMERIC(10,2) DEFAULT 0,
+            adresse_destination_id INTEGER,
             created_at          TIMESTAMP DEFAULT NOW(),
             updated_at          TIMESTAMP DEFAULT NOW()
         );
@@ -140,6 +143,69 @@ def safe_user(u):
         u = dict(u)
         u.pop('password_hash', None)
     return u
+
+def migrer_base_donnees():
+    """Ajoute les nouvelles colonnes si elles n'existent pas"""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        # Ajouter les nouvelles colonnes
+        nouvelles_colonnes = [
+            ("frais_service", "NUMERIC(10,2) DEFAULT 0"),
+            ("distance_metres", "NUMERIC(10,2) DEFAULT 0"),
+            ("adresse_destination_id", "INTEGER")
+        ]
+        
+        for col_name, col_type in nouvelles_colonnes:
+            cur.execute(f"""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='colis' AND column_name='{col_name}'
+            """)
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE colis ADD COLUMN {col_name} {col_type}")
+                print(f"✅ Colonne {col_name} ajoutée")
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ Migration terminée")
+    except Exception as e:
+        print(f"⚠️ Erreur migration: {e}")
+
+# ─────────────────────────────────────────────
+# CALCUL DES FRAIS (identique au frontend)
+# ─────────────────────────────────────────────
+TARIF_PAR_METRE = 0.5   # FCFA par mètre
+FRAIS_MINIMUM = 200     # FCFA
+
+def calculer_frais(distance_metres, type_service, valeur_marchandise=0):
+    """
+    Calcule les frais de livraison comme dans le frontend
+    
+    distance_metres : distance en mètres depuis la base
+    type_service : 'recuperation', 'achat', 'livraison'
+    valeur_marchandise : budget de l'article (pour 'achat' uniquement)
+    """
+    # Frais de livraison de base
+    frais_livraison = max(
+        round(distance_metres * TARIF_PAR_METRE),
+        FRAIS_MINIMUM
+    )
+    
+    frais_service = 0
+    
+    if type_service == 'achat' and valeur_marchandise > 0:
+        frais_service = round(valeur_marchandise * 0.05)  # 5% du montant
+    
+    total = frais_livraison + frais_service
+    
+    return {
+        'frais_livraison': frais_livraison,
+        'frais_service': frais_service,
+        'total': total
+    }
 
 # ═══════════════════════════════════════════════
 #  AUTH
@@ -210,6 +276,8 @@ def recuperer_colis():
     description_colis = data.get("description_colis","").strip()
     adresse_client    = data.get("adresse_client","").strip()
     note              = data.get("note_supplementaire","")
+    distance_metres   = float(data.get("distance_metres", 0))
+    adresse_destination_id = data.get("adresse_destination_id")
 
     if not all([telephone, lieu_recuperation, description_colis, adresse_client]):
         return jsonify({"error": "Champs obligatoires manquants"}), 400
@@ -218,6 +286,9 @@ def recuperer_colis():
     if not user:
         return jsonify({"error": "Client introuvable"}), 404
 
+    # Calculer les frais (pas de % pour récupération)
+    frais = calculer_frais(distance_metres, "recuperation")
+
     try:
         code = gen_code()
         conn = get_conn()
@@ -225,13 +296,17 @@ def recuperer_colis():
         cur.execute("""
             INSERT INTO colis (code_suivi, type_service, client_id, telephone_client,
                 lieu_recuperation, description_colis, adresse_client,
-                note_supplementaire, statut, frais_livraison)
-            VALUES (%s,'recuperation',%s,%s,%s,%s,%s,%s,'en_attente',500) RETURNING *
+                note_supplementaire, statut, frais_livraison, frais_service,
+                distance_metres, adresse_destination_id)
+            VALUES (%s,'recuperation',%s,%s,%s,%s,%s,%s,'en_attente',%s,%s,%s,%s) RETURNING *
         """, (code, user["id"], telephone, lieu_recuperation,
-              description_colis, adresse_client, note))
+              description_colis, adresse_client, note,
+              frais['frais_livraison'], frais['frais_service'],
+              distance_metres, adresse_destination_id))
         colis = dict(cur.fetchone())
         add_suivi(conn, colis["id"], "en_attente",
-                  "Demande de récupération reçue.", user["id"])
+                  f"Demande de récupération reçue. Frais total: {frais['total']} FCFA", 
+                  user["id"])
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success":True,"code_suivi":code,"colis":colis}), 201
     except Exception as e:
@@ -243,9 +318,11 @@ def acheter_colis():
     telephone      = data.get("telephone","").strip()
     article        = data.get("article","").strip()
     boutique       = data.get("boutique","").strip()
-    budget_article = data.get("budget_article", 0)
+    budget_article = float(data.get("budget_article", 0))
     adresse_client = data.get("adresse_client","").strip()
     note           = data.get("note_supplementaire","")
+    distance_metres = float(data.get("distance_metres", 0))
+    adresse_destination_id = data.get("adresse_destination_id")
 
     if not all([telephone, article, boutique, adresse_client]):
         return jsonify({"error": "Champs obligatoires manquants"}), 400
@@ -254,6 +331,9 @@ def acheter_colis():
     if not user:
         return jsonify({"error": "Client introuvable"}), 404
 
+    # Calculer les frais
+    frais = calculer_frais(distance_metres, "achat", budget_article)
+
     try:
         code = gen_code()
         conn = get_conn()
@@ -261,13 +341,17 @@ def acheter_colis():
         cur.execute("""
             INSERT INTO colis (code_suivi, type_service, client_id, telephone_client,
                 article, boutique, budget_article, adresse_client,
-                note_supplementaire, statut, frais_livraison)
-            VALUES (%s,'achat',%s,%s,%s,%s,%s,%s,%s,'en_attente',700) RETURNING *
+                note_supplementaire, statut, frais_livraison, frais_service,
+                distance_metres, adresse_destination_id)
+            VALUES (%s,'achat',%s,%s,%s,%s,%s,%s,%s,'en_attente',%s,%s,%s,%s) RETURNING *
         """, (code, user["id"], telephone, article, boutique,
-              budget_article, adresse_client, note))
+              budget_article, adresse_client, note, 
+              frais['frais_livraison'], frais['frais_service'],
+              distance_metres, adresse_destination_id))
         colis = dict(cur.fetchone())
         add_suivi(conn, colis["id"], "en_attente",
-                  f"Commande reçue pour '{article}'.", user["id"])
+                  f"Commande reçue pour '{article}'. Frais total: {frais['total']} FCFA (Livraison: {frais['frais_livraison']} FCFA, Service: {frais['frais_service']} FCFA)", 
+                  user["id"])
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success":True,"code_suivi":code,"colis":colis}), 201
     except Exception as e:
@@ -283,6 +367,8 @@ def livrer_colis():
     description_envoi = data.get("description_envoi","").strip()
     adresse_client    = data.get("adresse_client","").strip()
     note              = data.get("note_supplementaire","")
+    distance_metres   = float(data.get("distance_metres", 0))
+    adresse_destination_id = data.get("adresse_destination_id")
 
     if not all([telephone, nom_destinataire, telephone_dest,
                 adresse_livraison, description_envoi, adresse_client]):
@@ -292,6 +378,9 @@ def livrer_colis():
     if not user:
         return jsonify({"error": "Client introuvable"}), 404
 
+    # Calculer les frais
+    frais = calculer_frais(distance_metres, "livraison")
+
     try:
         code = gen_code()
         conn = get_conn()
@@ -300,13 +389,17 @@ def livrer_colis():
             INSERT INTO colis (code_suivi, type_service, client_id, telephone_client,
                 nom_destinataire, telephone_dest, adresse_livraison,
                 description_envoi, adresse_client, note_supplementaire,
-                statut, frais_livraison)
-            VALUES (%s,'livraison',%s,%s,%s,%s,%s,%s,%s,%s,'en_attente',500) RETURNING *
+                statut, frais_livraison, frais_service,
+                distance_metres, adresse_destination_id)
+            VALUES (%s,'livraison',%s,%s,%s,%s,%s,%s,%s,%s,'en_attente',%s,%s,%s,%s) RETURNING *
         """, (code, user["id"], telephone, nom_destinataire, telephone_dest,
-              adresse_livraison, description_envoi, adresse_client, note))
+              adresse_livraison, description_envoi, adresse_client, note,
+              frais['frais_livraison'], frais['frais_service'],
+              distance_metres, adresse_destination_id))
         colis = dict(cur.fetchone())
         add_suivi(conn, colis["id"], "en_attente",
-                  f"Livraison à {nom_destinataire} enregistrée.", user["id"])
+                  f"Livraison à {nom_destinataire} enregistrée. Frais total: {frais['total']} FCFA", 
+                  user["id"])
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success":True,"code_suivi":code,"colis":colis}), 201
     except Exception as e:
@@ -493,7 +586,7 @@ def admin_stats():
         nb_clients = cur.fetchone()["nb"]
         cur.execute("SELECT COUNT(*) AS nb FROM users WHERE role='livreur' AND actif=TRUE")
         nb_livreurs = cur.fetchone()["nb"]
-        cur.execute("SELECT COALESCE(SUM(frais_livraison),0) AS total FROM colis WHERE statut='livre'")
+        cur.execute("SELECT COALESCE(SUM(frais_livraision),0) AS total FROM colis WHERE statut='livre'")
         revenus = cur.fetchone()["total"]
         cur.execute("SELECT type_service, COUNT(*) AS nb FROM colis GROUP BY type_service")
         par_type = cur.fetchall()
@@ -735,11 +828,15 @@ def liste_clients():
 def health():
     return jsonify({"status": "ok", "app": "FABLA v2", "ville": "Assinie-Mafia"}), 200
 
-try:
-    init_db()
-    print("✅ Base de données initialisée")
-except Exception as e:
-    print(f"⚠️ Erreur init DB: {e}")
-
+# ─────────────────────────────────────────────
+# LANCEMENT
+# ─────────────────────────────────────────────
 if __name__ == "__main__":
+    try:
+        init_db()
+        print("✅ Base de données initialisée")
+        migrer_base_donnees()
+    except Exception as e:
+        print(f"⚠️ Erreur init DB: {e}")
+    
     app.run(debug=True, host="0.0.0.0", port=5000)
