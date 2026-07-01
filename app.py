@@ -1285,7 +1285,7 @@ def verify_payment(payment_id):
         }), 500
 
 @app.route("/api/payment/redirect", methods=["GET"])
-def payment_redirect():
+def payment_redirect2():
     """Page de redirection après paiement"""
     status = request.args.get("status", "pending")
     order_id = request.args.get("order_id")
