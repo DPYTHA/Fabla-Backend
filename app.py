@@ -1063,6 +1063,10 @@ def initiate_payment():
 
 @app.route("/api/payment/webhook", methods=["POST"])
 def payment_webhook():
+    logger.info("📨 Webhook reçu !")
+    
+    raw_body = request.get_data(as_text=True)
+    logger.info(f"Body: {raw_body}")
     """
     Webhook reçu de Genius Pay après un paiement
     """
