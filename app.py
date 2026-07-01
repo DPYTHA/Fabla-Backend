@@ -33,8 +33,7 @@ GENIUS_PAY_API_SECRET = os.getenv("GENIUS_PAY_API_SECRET")
 GENIUS_PAY_MERCHANT_ID = os.getenv("GENIUS_PAY_MERCHANT_ID")
 GENIUS_PAY_WEBHOOK_SECRET = os.getenv("GENIUS_PAY_WEBHOOK_SECRET")
 GENIUS_PAY_CALLBACK_URL = os.getenv("GENIUS_PAY_CALLBACK_URL", "https://fabla-backend-production.up.railway.app/api/payment/webhook")
-GENIUS_PAY_REDIRECT_URL = os.getenv("GENIUS_PAY_REDIRECT_URL", "https://fabla-backend-production.up.railway.app/api/payment/redirect")
-
+GENIUS_PAY_REDIRECT_URL = os.getenv("GENIUS_PAY_REDIRECT_URL", "fabla://payment/result")
 # ─────────────────────────────────────────────
 # CONFIG DB
 # ─────────────────────────────────────────────
@@ -1375,6 +1374,125 @@ def get_payment_status(order_id):
         logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/api/payment/redirect", methods=["GET"])
+def payment_redirect():
+    """Redirige vers l'historique des commandes du client"""
+    status = request.args.get("status", "pending")
+    order_id = request.args.get("order_id", "")
+    reference = request.args.get("reference", "")
+    telephone = request.args.get("telephone", "")
+    
+    # ✅ Construire l'URL de redirection vers l'historique
+    # Utiliser le schéma personnalisé pour l'app React Native
+    redirect_url = f"fabla://history?status={status}&order_id={order_id}&reference={reference}"
+    
+    # ✅ Si le téléphone est fourni, l'ajouter
+    if telephone:
+        redirect_url += f"&telephone={telephone}"
+    
+    # ✅ HTML de redirection automatique
+    html = f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="refresh" content="1;url={redirect_url}">
+        <title>Redirection vers FABLA</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background: #1A2A4A;
+                color: white;
+            }}
+            .container {{
+                text-align: center;
+                padding: 40px;
+                max-width: 400px;
+            }}
+            .spinner {{
+                border: 4px solid rgba(255,255,255,0.1);
+                border-top: 4px solid #4A90D9;
+                border-radius: 50%;
+                width: 50px;
+                height: 50px;
+                animation: spin 1s linear infinite;
+                margin: 20px auto;
+            }}
+            @keyframes spin {{
+                0% {{ transform: rotate(0deg); }}
+                100% {{ transform: rotate(360deg); }}
+            }}
+            .button {{
+                display: inline-block;
+                margin-top: 20px;
+                padding: 12px 30px;
+                background: #4A90D9;
+                color: white;
+                text-decoration: none;
+                border-radius: 8px;
+                border: none;
+                font-size: 16px;
+                cursor: pointer;
+            }}
+            .button:hover {{
+                background: #2C4A7C;
+            }}
+            .status-text {{
+                font-size: 24px;
+                margin-bottom: 10px;
+            }}
+            .success {{ color: #27ae60; }}
+            .failed {{ color: #e74c3c; }}
+            .pending {{ color: #f39c12; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="status-text {status}">
+                {('✅ Paiement réussi !' if status == 'success' or status == 'completed' else 
+                  '❌ Paiement échoué' if status == 'failed' else 
+                  '⏳ Paiement en cours')}
+            </div>
+            <div class="spinner"></div>
+            <p>Commande #<strong>{order_id}</strong></p>
+            <p>Référence: {reference}</p>
+            <p style="margin-top: 10px; font-size: 14px; opacity: 0.7;">
+                Vous allez être redirigé vers votre historique de commandes.
+            </p>
+            <button class="button" onclick="redirectToApp()">
+                📱 Voir mes commandes
+            </button>
+        </div>
+
+        <script>
+            function redirectToApp() {{
+                const params = new URLSearchParams(window.location.search);
+                const status = params.get('status') || 'pending';
+                const orderId = params.get('order_id') || '';
+                const reference = params.get('reference') || '';
+                const telephone = params.get('telephone') || '';
+                
+                let url = `fabla://history?status=${{status}}&order_id=${{orderId}}&reference=${{reference}}`;
+                if (telephone) {{
+                    url += `&telephone=${{telephone}}`;
+                }}
+                window.location.href = url;
+            }}
+
+            // ✅ Redirection automatique après 2 secondes
+            setTimeout(redirectToApp, 2000);
+        </script>
+    </body>
+    </html>
+    '''
+    
+    return html, 200
 # ─────────────────────────────────────────────
 # HEALTH
 # ─────────────────────────────────────────────
