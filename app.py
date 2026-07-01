@@ -23,6 +23,10 @@ CORS(app)
 # Configuration des logs
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+# CONFIG GENIUS PAY
+# ─────────────────────────────────────────────
 GENIUS_PAY_API_URL = os.getenv("GENIUS_PAY_API_URL", "https://api.geniuspay.com/v1/merchant")
 GENIUS_PAY_API_KEY = os.getenv("GENIUS_PAY_API_KEY")
 GENIUS_PAY_API_SECRET = os.getenv("GENIUS_PAY_API_SECRET") 
@@ -30,6 +34,7 @@ GENIUS_PAY_MERCHANT_ID = os.getenv("GENIUS_PAY_MERCHANT_ID")
 GENIUS_PAY_WEBHOOK_SECRET = os.getenv("GENIUS_PAY_WEBHOOK_SECRET")
 GENIUS_PAY_CALLBACK_URL = os.getenv("GENIUS_PAY_CALLBACK_URL", "https://fabla-backend-production.up.railway.app/api/payment/webhook")
 GENIUS_PAY_REDIRECT_URL = os.getenv("GENIUS_PAY_REDIRECT_URL", "https://fabla-backend-production.up.railway.app/api/payment/redirect")
+
 # ─────────────────────────────────────────────
 # CONFIG DB
 # ─────────────────────────────────────────────
@@ -91,10 +96,11 @@ def add_suivi(conn, colis_id, statut, message, auteur_id=None):
 
 def get_user_by_tel(telephone):
     conn = get_conn()
-    cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("SELECT * FROM users WHERE telephone=%s", (telephone,))
     u = cur.fetchone()
-    cur.close(); conn.close()
+    cur.close()
+    conn.close()
     return dict(u) if u else None
 
 def safe_user(u):
@@ -111,11 +117,11 @@ def genius_pay_headers():
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "X-API-Key": os.getenv("GENIUS_PAY_API_KEY"),      # ✅ Clé publique
-        "X-API-Secret": os.getenv("GENIUS_PAY_API_SECRET"), # ✅ Clé secrète
+        "X-API-Key": GENIUS_PAY_API_KEY,
+        "X-API-Secret": GENIUS_PAY_API_SECRET,
     }
-    if os.getenv("GENIUS_PAY_MERCHANT_ID"):
-        headers["X-Merchant-Id"] = os.getenv("GENIUS_PAY_MERCHANT_ID")
+    if GENIUS_PAY_MERCHANT_ID:
+        headers["X-Merchant-Id"] = GENIUS_PAY_MERCHANT_ID
     return headers
 
 def initiate_genius_pay_payment(amount, description, order_id, customer_phone, customer_name, payment_method=None):
@@ -129,8 +135,8 @@ def initiate_genius_pay_payment(amount, description, order_id, customer_phone, c
                 "phone": customer_phone,
                 "email": f"{customer_phone}@fabla.com",
             },
-            "success_url": GENIUS_PAY_REDIRECT_URL + "?status=success",
-            "error_url": GENIUS_PAY_REDIRECT_URL + "?status=failed",
+            "success_url": GENIUS_PAY_REDIRECT_URL + "?status=success&order_id=" + order_id,
+            "error_url": GENIUS_PAY_REDIRECT_URL + "?status=failed&order_id=" + order_id,
             "metadata": {
                 "order_id": order_id,
             }
@@ -139,9 +145,8 @@ def initiate_genius_pay_payment(amount, description, order_id, customer_phone, c
         if payment_method:
             payload["payment_method"] = payment_method
         
-        # ✅ L'URL finale sera: https://api.geniuspay.com/v1/merchant/payments
         url = f"{GENIUS_PAY_API_URL}/payments"
-        print(f"🔗 Genius Pay URL: {url}")  # Pour déboguer
+        logger.info(f"🔗 Genius Pay URL: {url}")
         
         response = requests.post(
             url,
@@ -150,8 +155,8 @@ def initiate_genius_pay_payment(amount, description, order_id, customer_phone, c
             timeout=30
         )
         
-        print(f"📨 Response status: {response.status_code}")
-        print(f"📨 Response body: {response.text}")
+        logger.info(f"📨 Response status: {response.status_code}")
+        logger.info(f"📨 Response body: {response.text[:500]}")
         
         if response.status_code in [200, 201]:
             data = response.json()
@@ -171,13 +176,11 @@ def initiate_genius_pay_payment(amount, description, order_id, customer_phone, c
             }
             
     except Exception as e:
-        print(f"❌ Erreur Genius Pay: {str(e)}")
+        logger.error(f"❌ Erreur Genius Pay: {str(e)}")
         return {"success": False, "error": str(e)}
 
 def verify_genius_pay_payment(payment_id):
-    """
-    Vérifie le statut d'un paiement Genius Pay
-    """
+    """Vérifie le statut d'un paiement Genius Pay"""
     try:
         response = requests.get(
             f"{GENIUS_PAY_API_URL}/payments/{payment_id}",
@@ -211,7 +214,7 @@ def verify_genius_pay_payment(payment_id):
 # ─────────────────────────────────────────────
 def init_db():
     conn = get_conn()
-    cur  = conn.cursor()
+    cur = conn.cursor()
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -332,13 +335,13 @@ def migrer_base_donnees():
         ("payment_id",             "VARCHAR(100)"),
         ("payment_reference",      "VARCHAR(100)"),
         ("email",                  "VARCHAR(100)"),
+        ("adresse_livraison",      "TEXT"),
     ]
     try:
         conn = get_conn()
         cur = conn.cursor()
         for col_name, col_type in migrations:
-            # Vérifier si la colonne existe dans la table users ou colis
-            tables = ['users', 'colis']
+            tables = ['colis']
             for table in tables:
                 cur.execute("""
                     SELECT column_name FROM information_schema.columns
@@ -364,17 +367,17 @@ init_db()
 # ═══════════════════════════════════════════════
 @app.route("/api/auth", methods=["POST"])
 def auth():
-    data      = request.get_json()
+    data = request.get_json()
     telephone = data.get("telephone", "").strip()
-    role      = data.get("role", "client").strip()
-    password  = data.get("password", "").strip()
-    code_liv  = data.get("code_livreur", "").strip()
+    role = data.get("role", "client").strip()
+    password = data.get("password", "").strip()
+    code_liv = data.get("code_livreur", "").strip()
 
     if not telephone or len(telephone) < 4:
         return jsonify({"error": "Numéro invalide"}), 400
 
     conn = get_conn()
-    cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     if role == "client":
         cur.execute("SELECT * FROM users WHERE telephone=%s AND role='client'", (telephone,))
@@ -386,7 +389,8 @@ def auth():
             )
             user = cur.fetchone()
             conn.commit()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "role": "client", "user": safe_user(user)}), 200
 
     if role == "livreur":
@@ -397,7 +401,8 @@ def auth():
             WHERE telephone=%s AND role='livreur' AND code_livreur=%s AND actif=TRUE
         """, (telephone, code_liv))
         user = cur.fetchone()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         if not user:
             return jsonify({"error": "Identifiants livreur incorrects ou compte inactif"}), 401
         return jsonify({"success": True, "role": "livreur", "user": safe_user(user)}), 200
@@ -410,7 +415,8 @@ def auth():
             WHERE telephone=%s AND role='admin' AND password_hash=%s
         """, (telephone, hash_pwd(password)))
         user = cur.fetchone()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         if not user:
             return jsonify({"error": "Identifiants admin incorrects"}), 401
         return jsonify({"success": True, "role": "admin", "user": safe_user(user)}), 200
@@ -423,17 +429,25 @@ def auth():
 @app.route("/api/colis/recuperer", methods=["POST"])
 def recuperer_colis():
     data = request.get_json()
-    telephone              = data.get("telephone", "").strip()
-    lieu_recuperation      = data.get("lieu_recuperation", "").strip()
-    description_colis      = data.get("description_colis", "").strip()
-    adresse_client         = data.get("adresse_client", "").strip()
-    note                   = data.get("note_supplementaire", "")
-    distance_metres        = float(data.get("distance_metres", 0))
+    logger.info(f"📦 Récupération - Données reçues: {data}")
+    
+    telephone = data.get("telephone", "").strip()
+    lieu_recuperation = data.get("lieu_recuperation", "").strip()
+    description_colis = data.get("description_colis", "").strip()
+    adresse_client = data.get("adresse_client", "").strip()
+    note = data.get("note_supplementaire", "")
+    distance_metres = float(data.get("distance_metres", 0))
     adresse_destination_id = data.get("adresse_destination_id")
-    operateur              = data.get("operateur_paiement", "genius_pay")
+    operateur = data.get("operateur_paiement", "genius_pay")
 
     if not all([telephone, lieu_recuperation, description_colis, adresse_client]):
-        return jsonify({"error": "Champs obligatoires manquants"}), 400
+        missing = []
+        if not telephone: missing.append("telephone")
+        if not lieu_recuperation: missing.append("lieu_recuperation")
+        if not description_colis: missing.append("description_colis")
+        if not adresse_client: missing.append("adresse_client")
+        logger.error(f"❌ Champs manquants: {missing}")
+        return jsonify({"error": f"Champs obligatoires manquants: {missing}"}), 400
 
     user = get_user_by_tel(telephone)
     if not user:
@@ -444,7 +458,7 @@ def recuperer_colis():
     try:
         code = gen_code()
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             INSERT INTO colis (
                 code_suivi, type_service, client_id, telephone_client,
@@ -463,26 +477,38 @@ def recuperer_colis():
         add_suivi(conn, colis["id"], "en_attente",
                   f"Demande reçue. Frais : {frais['total']} FCFA. Paiement {operateur} en attente.",
                   user["id"])
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"✅ Commande créée: {code}")
         return jsonify({"success": True, "code_suivi": code, "colis": colis}), 201
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/colis/acheter", methods=["POST"])
 def acheter_colis():
     data = request.get_json()
-    telephone              = data.get("telephone", "").strip()
-    article                = data.get("article", "").strip()
-    boutique               = data.get("boutique", "").strip()
-    budget_article         = float(data.get("budget_article", 0))
-    adresse_client         = data.get("adresse_client", "").strip()
-    note                   = data.get("note_supplementaire", "")
-    distance_metres        = float(data.get("distance_metres", 0))
+    logger.info(f"📦 Achat - Données reçues: {data}")
+    
+    telephone = data.get("telephone", "").strip()
+    article = data.get("article", "").strip()
+    boutique = data.get("boutique", "").strip()
+    budget_article = float(data.get("budget_article", 0))
+    adresse_client = data.get("adresse_client", "").strip()
+    note = data.get("note_supplementaire", "")
+    distance_metres = float(data.get("distance_metres", 0))
     adresse_destination_id = data.get("adresse_destination_id")
-    operateur              = data.get("operateur_paiement", "genius_pay")
+    operateur = data.get("operateur_paiement", "genius_pay")
 
     if not all([telephone, article, boutique, adresse_client]):
-        return jsonify({"error": "Champs obligatoires manquants"}), 400
+        missing = []
+        if not telephone: missing.append("telephone")
+        if not article: missing.append("article")
+        if not boutique: missing.append("boutique")
+        if not adresse_client: missing.append("adresse_client")
+        logger.error(f"❌ Champs manquants: {missing}")
+        return jsonify({"error": f"Champs obligatoires manquants: {missing}"}), 400
 
     user = get_user_by_tel(telephone)
     if not user:
@@ -493,7 +519,7 @@ def acheter_colis():
     try:
         code = gen_code()
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             INSERT INTO colis (
                 code_suivi, type_service, client_id, telephone_client,
@@ -512,28 +538,45 @@ def acheter_colis():
         add_suivi(conn, colis["id"], "en_attente",
                   f"Commande '{article}'. Livraison: {frais['frais_livraison']} FCFA + Service: {frais['frais_service']} FCFA = {frais['total']} FCFA. Paiement {operateur} en attente.",
                   user["id"])
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"✅ Commande créée: {code}")
         return jsonify({"success": True, "code_suivi": code, "colis": colis}), 201
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/colis/livrer", methods=["POST"])
 def livrer_colis():
     data = request.get_json()
-    telephone              = data.get("telephone", "").strip()
-    nom_destinataire       = data.get("nom_destinataire", "").strip()
-    telephone_dest         = data.get("telephone_dest", "").strip()
-    adresse_livraison      = data.get("adresse_livraison", "").strip()
-    description_envoi      = data.get("description_envoi", "").strip()
-    adresse_client         = data.get("adresse_client", "").strip()
-    note                   = data.get("note_supplementaire", "")
-    distance_metres        = float(data.get("distance_metres", 0))
+    logger.info(f"📦 Livraison - Données reçues: {data}")
+    
+    telephone = data.get("telephone", "").strip()
+    nom_destinataire = data.get("nom_destinataire", "").strip()
+    telephone_dest = data.get("telephone_dest", "").strip()
+    adresse_livraison = data.get("adresse_livraison", "").strip()
+    description_envoi = data.get("description_envoi", "").strip()
+    adresse_client = data.get("adresse_client", "").strip()
+    note = data.get("note_supplementaire", "")
+    distance_metres = float(data.get("distance_metres", 0))
     adresse_destination_id = data.get("adresse_destination_id")
-    operateur              = data.get("operateur_paiement", "genius_pay")
+    operateur = data.get("operateur_paiement", "genius_pay")
 
-    if not all([telephone, nom_destinataire, telephone_dest,
-                adresse_livraison, description_envoi, adresse_client]):
-        return jsonify({"error": "Champs obligatoires manquants"}), 400
+    # ✅ Vérification des champs obligatoires
+    required_fields = {
+        "telephone": telephone,
+        "nom_destinataire": nom_destinataire,
+        "telephone_dest": telephone_dest,
+        "adresse_livraison": adresse_livraison,
+        "description_envoi": description_envoi,
+        "adresse_client": adresse_client,
+    }
+    
+    missing = [key for key, value in required_fields.items() if not value]
+    if missing:
+        logger.error(f"❌ Champs manquants: {missing}")
+        return jsonify({"error": f"Champs obligatoires manquants: {missing}"}), 400
 
     user = get_user_by_tel(telephone)
     if not user:
@@ -544,7 +587,7 @@ def livrer_colis():
     try:
         code = gen_code()
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             INSERT INTO colis (
                 code_suivi, type_service, client_id, telephone_client,
@@ -564,16 +607,20 @@ def livrer_colis():
         add_suivi(conn, colis["id"], "en_attente",
                   f"Livraison à {nom_destinataire}. Frais : {frais['total']} FCFA. Paiement {operateur} en attente.",
                   user["id"])
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.info(f"✅ Commande créée: {code}")
         return jsonify({"success": True, "code_suivi": code, "colis": colis}), 201
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/colis/suivi/<code>", methods=["GET"])
 def suivi_colis(code):
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT * FROM colis WHERE code_suivi=%s", (code.upper(),))
         colis = cur.fetchone()
         if not colis:
@@ -586,20 +633,22 @@ def suivi_colis(code):
             WHERE s.colis_id=%s ORDER BY s.created_at ASC
         """, (colis["id"],))
         historique = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return jsonify({
-            "success":    True,
-            "colis":      dict(colis),
+            "success": True,
+            "colis": dict(colis),
             "historique": [dict(h) for h in historique],
         }), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/client/<telephone>/historique", methods=["GET"])
 def historique_client(telephone):
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT c.*, u.nom AS livreur_nom, u.telephone AS livreur_tel
             FROM colis c
@@ -607,9 +656,11 @@ def historique_client(telephone):
             WHERE c.telephone_client=%s ORDER BY c.created_at DESC
         """, (telephone,))
         rows = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "commandes": [dict(r) for r in rows]}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 # ═══════════════════════════════════════════════
@@ -619,7 +670,7 @@ def historique_client(telephone):
 def missions_livreur(livreur_id):
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT c.*, u.telephone AS client_tel, u.nom AS client_nom
             FROM colis c
@@ -627,18 +678,20 @@ def missions_livreur(livreur_id):
             WHERE c.livreur_id=%s ORDER BY c.created_at DESC
         """, (livreur_id,))
         missions = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "missions": [dict(m) for m in missions]}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 STATUTS_LIVREUR = ["en_route_recuperation", "recupere", "en_livraison", "livre"]
 
 @app.route("/api/livreur/colis/<code>/statut", methods=["PUT"])
 def livreur_update_statut(code):
-    data       = request.get_json()
-    statut     = data.get("statut", "").strip()
-    message    = data.get("message", "")
+    data = request.get_json()
+    statut = data.get("statut", "").strip()
+    message = data.get("message", "")
     livreur_id = data.get("livreur_id")
 
     if statut not in STATUTS_LIVREUR:
@@ -646,7 +699,7 @@ def livreur_update_statut(code):
 
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute(
             "SELECT * FROM colis WHERE code_suivi=%s AND livreur_id=%s",
             (code.upper(), livreur_id)
@@ -661,16 +714,19 @@ def livreur_update_statut(code):
         updated = dict(cur.fetchone())
         add_suivi(conn, colis["id"], statut,
                   message or f"Statut: {statut}", livreur_id)
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "colis": updated}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/livreur/<int:livreur_id>/stats", methods=["GET"])
 def get_livreur_stats(livreur_id):
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         cur.execute("""
             SELECT COUNT(*) AS total,
@@ -693,22 +749,24 @@ def get_livreur_stats(livreur_id):
         """, (livreur_id,))
         today = dict(cur.fetchone())
 
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
 
-        total_frais      = float(result["total_frais"])
+        total_frais = float(result["total_frais"])
         frais_aujourdhui = float(today["frais"])
 
         return jsonify({
             "success": True,
             "stats": {
-                "total_livraisons":     result["total"],
-                "gains_totaux":         round(total_frais * 0.6),
-                "encours":              encours,
-                "livraisons_aujourdhui":today["nb"],
-                "gains_aujourdhui":     round(frais_aujourdhui * 0.6),
+                "total_livraisons": result["total"],
+                "gains_totaux": round(total_frais * 0.6),
+                "encours": encours,
+                "livraisons_aujourdhui": today["nb"],
+                "gains_aujourdhui": round(frais_aujourdhui * 0.6),
             }
         }), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 # ═══════════════════════════════════════════════
@@ -718,19 +776,19 @@ def get_livreur_stats(livreur_id):
 def admin_stats():
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         def count(q, p=()):
             cur.execute(q, p)
             return cur.fetchone()
 
-        total        = count("SELECT COUNT(*) AS n FROM colis")["n"]
-        en_attente   = count("SELECT COUNT(*) AS n FROM colis WHERE statut='en_attente'")["n"]
-        a_confirmer  = count("SELECT COUNT(*) AS n FROM colis WHERE paiement_statut='en_attente_confirmation'")["n"]
+        total = count("SELECT COUNT(*) AS n FROM colis")["n"]
+        en_attente = count("SELECT COUNT(*) AS n FROM colis WHERE statut='en_attente'")["n"]
+        a_confirmer = count("SELECT COUNT(*) AS n FROM colis WHERE paiement_statut='en_attente_confirmation'")["n"]
         en_livraison = count("SELECT COUNT(*) AS n FROM colis WHERE statut='en_livraison'")["n"]
-        livres       = count("SELECT COUNT(*) AS n FROM colis WHERE statut='livre'")["n"]
-        nb_clients   = count("SELECT COUNT(*) AS n FROM users WHERE role='client'")["n"]
-        nb_livreurs  = count("SELECT COUNT(*) AS n FROM users WHERE role='livreur' AND actif=TRUE")["n"]
+        livres = count("SELECT COUNT(*) AS n FROM colis WHERE statut='livre'")["n"]
+        nb_clients = count("SELECT COUNT(*) AS n FROM users WHERE role='client'")["n"]
+        nb_livreurs = count("SELECT COUNT(*) AS n FROM users WHERE role='livreur' AND actif=TRUE")["n"]
 
         cur.execute("SELECT COALESCE(SUM(frais_livraison + frais_service), 0) AS rev FROM colis WHERE statut='livre'")
         revenus = float(cur.fetchone()["rev"])
@@ -738,32 +796,34 @@ def admin_stats():
         cur.execute("SELECT type_service, COUNT(*) AS nb FROM colis GROUP BY type_service")
         par_type = [dict(r) for r in cur.fetchall()]
 
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return jsonify({
             "success": True,
             "stats": {
-                "total_colis":    total,
-                "en_attente":     en_attente,
-                "a_confirmer":    a_confirmer,
-                "en_livraison":   en_livraison,
-                "livres":         livres,
-                "nb_clients":     nb_clients,
-                "nb_livreurs":    nb_livreurs,
-                "revenus_fcfa":   revenus,
-                "par_type":       par_type,
+                "total_colis": total,
+                "en_attente": en_attente,
+                "a_confirmer": a_confirmer,
+                "en_livraison": en_livraison,
+                "livres": livres,
+                "nb_clients": nb_clients,
+                "nb_livreurs": nb_livreurs,
+                "revenus_fcfa": revenus,
+                "par_type": par_type,
             }
         }), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/commandes", methods=["GET"])
-@app.route("/api/admin/colis",     methods=["GET"])
+@app.route("/api/admin/colis", methods=["GET"])
 def admin_all_colis():
-    statut          = request.args.get("statut")
+    statut = request.args.get("statut")
     paiement_statut = request.args.get("paiement_statut")
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         base = """
             SELECT c.*, u.telephone AS client_tel,
                    l.nom AS livreur_nom, l.telephone AS livreur_tel
@@ -781,20 +841,22 @@ def admin_all_colis():
         else:
             cur.execute(base + "ORDER BY c.created_at DESC")
         rows = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "commandes": [dict(r) for r in rows]}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/colis/<code>/confirmer-paiement", methods=["PUT"])
 def confirmer_paiement(code):
-    data       = request.get_json() or {}
+    data = request.get_json() or {}
     livreur_id = data.get("livreur_id")
-    admin_id   = data.get("admin_id")
+    admin_id = data.get("admin_id")
 
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
         if livreur_id:
             cur.execute("""
@@ -821,18 +883,21 @@ def confirmer_paiement(code):
             msg += f" Assigné à {liv['nom'] if liv else livreur_id}."
 
         add_suivi(conn, colis["id"], "confirme", msg, admin_id)
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "colis": dict(colis)}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/colis/<code>/rejeter-paiement", methods=["PUT"])
 def rejeter_paiement(code):
-    data     = request.get_json() or {}
+    data = request.get_json() or {}
     admin_id = data.get("admin_id")
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             UPDATE colis SET paiement_statut='rejete', statut='annule', updated_at=NOW()
             WHERE code_suivi=%s RETURNING *
@@ -842,21 +907,24 @@ def rejeter_paiement(code):
             return jsonify({"error": "Colis introuvable"}), 404
         add_suivi(conn, colis["id"], "annule",
                   "Paiement non reçu. Commande annulée par l'admin.", admin_id)
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "colis": dict(colis)}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/colis/<code>/assigner", methods=["PUT"])
 def assigner_livreur(code):
-    data       = request.get_json()
+    data = request.get_json()
     livreur_id = data.get("livreur_id")
-    admin_id   = data.get("admin_id")
+    admin_id = data.get("admin_id")
     if not livreur_id:
         return jsonify({"error": "livreur_id requis"}), 400
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             UPDATE colis SET livreur_id=%s, statut='confirme', updated_at=NOW()
             WHERE code_suivi=%s RETURNING *
@@ -868,9 +936,12 @@ def assigner_livreur(code):
         liv = cur.fetchone()
         add_suivi(conn, colis["id"], "confirme",
                   f"Livreur assigné : {liv['nom'] if liv else livreur_id}.", admin_id)
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "colis": dict(colis)}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 STATUTS_VALIDES = [
@@ -880,15 +951,15 @@ STATUTS_VALIDES = [
 
 @app.route("/api/admin/colis/<code>/statut", methods=["PUT"])
 def admin_update_statut(code):
-    data     = request.get_json()
-    statut   = data.get("statut", "").strip()
-    message  = data.get("message", "")
+    data = request.get_json()
+    statut = data.get("statut", "").strip()
+    message = data.get("message", "")
     admin_id = data.get("admin_id")
     if statut not in STATUTS_VALIDES:
         return jsonify({"error": "Statut invalide"}), 400
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             UPDATE colis SET statut=%s, updated_at=NOW()
             WHERE code_suivi=%s RETURNING *
@@ -898,16 +969,19 @@ def admin_update_statut(code):
             return jsonify({"error": "Colis introuvable"}), 404
         add_suivi(conn, colis["id"], statut,
                   message or f"Admin: statut → {statut}", admin_id)
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "colis": dict(colis)}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/livreurs", methods=["GET"])
 def liste_livreurs():
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT u.id, u.telephone, u.nom, u.code_livreur, u.actif,
                    COUNT(c.id) AS missions_total,
@@ -918,48 +992,53 @@ def liste_livreurs():
             GROUP BY u.id ORDER BY u.created_at DESC
         """)
         livreurs = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "livreurs": [dict(l) for l in livreurs]}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/livreurs", methods=["POST"])
 def creer_livreur():
-    data      = request.get_json()
+    data = request.get_json()
     telephone = data.get("telephone", "").strip()
-    nom       = data.get("nom", "").strip()
-    pin       = data.get("pin", "").strip()
+    nom = data.get("nom", "").strip()
+    pin = data.get("pin", "").strip()
 
     if not all([telephone, nom, pin]) or len(pin) < 4:
         return jsonify({"error": "Téléphone, nom et PIN (≥4 caractères) requis"}), 400
 
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             INSERT INTO users (telephone, role, nom, code_livreur, actif)
             VALUES (%s,'livreur',%s,%s,TRUE) RETURNING id, telephone, nom, code_livreur, actif
         """, (telephone, nom, pin))
         livreur = dict(cur.fetchone())
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         return jsonify({
-            "success":      True,
-            "livreur":      livreur,
+            "success": True,
+            "livreur": livreur,
             "code_livreur": pin,
-            "message":      f"Livreur créé. Code d'accès : {pin}",
+            "message": f"Livreur créé. Code d'accès : {pin}",
         }), 201
     except psycopg2.errors.UniqueViolation:
         return jsonify({"error": "Ce numéro existe déjà"}), 409
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/livreurs/<int:livreur_id>/toggle", methods=["PUT"])
-@app.route("/api/admin/livreurs/<int:livreur_id>/actif",  methods=["PUT"])
+@app.route("/api/admin/livreurs/<int:livreur_id>/actif", methods=["PUT"])
 def toggle_livreur(livreur_id):
-    data  = request.get_json() or {}
+    data = request.get_json() or {}
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT actif FROM users WHERE id=%s AND role='livreur'", (livreur_id,))
         livreur = cur.fetchone()
         if not livreur:
@@ -970,16 +1049,19 @@ def toggle_livreur(livreur_id):
             (nouvel_etat, livreur_id)
         )
         result = dict(cur.fetchone())
-        conn.commit(); cur.close(); conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "livreur": result}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/clients", methods=["GET"])
 def liste_clients():
     try:
         conn = get_conn()
-        cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
             SELECT u.id, u.telephone, u.created_at, COUNT(c.id) AS nb_commandes
             FROM users u
@@ -988,9 +1070,11 @@ def liste_clients():
             GROUP BY u.id ORDER BY u.created_at DESC
         """)
         clients = cur.fetchall()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         return jsonify({"success": True, "clients": [dict(c) for c in clients]}), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 # ─────────────────────────────────────────────
@@ -1000,13 +1084,14 @@ def liste_clients():
 def initiate_payment():
     """Initie un paiement via Genius Pay"""
     data = request.get_json()
+    logger.info(f"📦 Initiation paiement - Données reçues: {data}")
     
     order_id = data.get("order_id")
     amount = data.get("amount")
     description = data.get("description", f"Commande {order_id}")
     customer_phone = data.get("customer_phone")
     customer_name = data.get("customer_name", "Client FABLA")
-    payment_method = data.get("payment_method")  # Peut être None → mode checkout
+    payment_method = data.get("payment_method")
     
     if not all([order_id, amount, customer_phone]):
         return jsonify({"error": "order_id, amount et customer_phone sont requis"}), 400
@@ -1033,7 +1118,6 @@ def initiate_payment():
     )
     
     if payment_result["success"]:
-        # Sauvegarder le payment_id dans la base
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("""
@@ -1063,34 +1147,30 @@ def initiate_payment():
 
 @app.route("/api/payment/webhook", methods=["POST"])
 def payment_webhook():
-    logger.info("📨 Webhook reçu !")
-    
+    """Webhook reçu de Genius Pay après un paiement"""
     raw_body = request.get_data(as_text=True)
-    logger.info(f"Body: {raw_body}")
-    """
-    Webhook reçu de Genius Pay après un paiement
-    """
-    # Récupérer le corps brut de la requête
-    raw_body = request.get_data(as_text=True)
+    logger.info(f"📨 Webhook reçu! Body: {raw_body[:500]}")
     
     # Vérifier la signature du webhook
     if GENIUS_PAY_WEBHOOK_SECRET:
         signature = request.headers.get('x-webhook-signature', '')
         timestamp = request.headers.get('x-webhook-timestamp', '')
         
-        expected_signature = hmac.new(
-            GENIUS_PAY_WEBHOOK_SECRET.encode(),
-            f"{timestamp}.{raw_body}".encode(),
-            hashlib.sha256
-        ).hexdigest()
-        
-        if not hmac.compare_digest(signature, expected_signature):
-            logger.warning("⚠️ Signature webhook invalide")
-            return jsonify({"error": "Unauthorized"}), 401
+        if signature and timestamp:
+            expected_signature = hmac.new(
+                GENIUS_PAY_WEBHOOK_SECRET.encode(),
+                f"{timestamp}.{raw_body}".encode(),
+                hashlib.sha256
+            ).hexdigest()
+            
+            if not hmac.compare_digest(signature, expected_signature):
+                logger.warning("⚠️ Signature webhook invalide")
+                return jsonify({"error": "Unauthorized"}), 401
     
     try:
         event_data = json.loads(raw_body)
     except json.JSONDecodeError:
+        logger.error("❌ JSON invalide")
         return jsonify({"error": "Invalid JSON"}), 400
     
     event = event_data.get("event")
@@ -1104,9 +1184,8 @@ def payment_webhook():
     if not payment_id or not status:
         return jsonify({"error": "Données manquantes"}), 400
     
-    logger.info(f"📨 Webhook reçu: event={event}, status={status}, order_id={order_id}")
+    logger.info(f"📨 Webhook: event={event}, status={status}, order_id={order_id}")
     
-    # Mettre à jour le statut de la commande
     conn = get_conn()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     
@@ -1132,7 +1211,6 @@ def payment_webhook():
                      f"✅ Paiement confirmé via Genius Pay (Réf: {reference})", 
                      None)
             
-            # Enregistrer dans la table des paiements
             cur.execute("""
                 INSERT INTO payments (colis_id, payment_id, reference, amount, currency, status, payment_method, customer_phone, customer_name, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -1241,6 +1319,7 @@ def get_payment_methods():
                 ],
             }), 200
     except Exception as e:
+        logger.warning(f"⚠️ Erreur récupération méthodes: {e}")
         return jsonify({
             "success": True,
             "methods": [
@@ -1260,7 +1339,8 @@ def get_payment_status(order_id):
             (order_id,)
         )
         colis = cur.fetchone()
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
         
         if not colis:
             return jsonify({"error": "Commande introuvable"}), 404
@@ -1273,6 +1353,7 @@ def get_payment_status(order_id):
             "statut": colis["statut"],
         }), 200
     except Exception as e:
+        logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 # ─────────────────────────────────────────────
