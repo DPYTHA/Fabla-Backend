@@ -1150,19 +1150,24 @@ def payment_webhook():
     raw_body = request.get_data(as_text=True)
     logger.info(f"📨 Webhook reçu! Body: {raw_body[:500]}")
     
+    # Headers attendus par GeniusPay
     signature = request.headers.get('x-webhook-signature', '')
     timestamp = request.headers.get('x-webhook-timestamp', '')
+    event_type = request.headers.get('x-webhook-event', '')
+    
     logger.info(f"🔑 Signature reçue: {signature}")
     logger.info(f"⏰ Timestamp reçu: {timestamp}")
+    logger.info(f"📌 Event reçu: {event_type}")
     
     if GENIUS_PAY_WEBHOOK_SECRET:
         logger.info(f"🔑 Secret utilisé: {GENIUS_PAY_WEBHOOK_SECRET[:10]}...")
         
         if signature and timestamp:
+            # ✅ Format: timestamp + "." + raw_body (comme dans la doc)
             data = f"{timestamp}.{raw_body}"
             expected = hmac.new(
-                GENIUS_PAY_WEBHOOK_SECRET.encode(),
-                data.encode(),
+                GENIUS_PAY_WEBHOOK_SECRET.encode('utf-8'),
+                data.encode('utf-8'),
                 hashlib.sha256
             ).hexdigest()
             
@@ -1176,8 +1181,7 @@ def payment_webhook():
                     "error": "Unauthorized",
                     "debug": {
                         "received": signature,
-                        "expected": expected,
-                        "secret_preview": GENIUS_PAY_WEBHOOK_SECRET[:10] + "..."
+                        "expected": expected
                     }
                 }), 401
     
@@ -1260,6 +1264,8 @@ def payment_webhook():
     conn.close()
     
     return jsonify({"success": True, "received": True}), 200
+
+
 @app.route("/api/payment/verify/<payment_id>", methods=["GET"])
 def verify_payment(payment_id):
     """Vérifie le statut d'un paiement"""
