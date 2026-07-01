@@ -1145,107 +1145,107 @@ def initiate_payment():
             "error": payment_result.get("error", "Erreur lors de l'initiation du paiement"),
         }), 500
 
-@app.route("/api/payment/webhook", methods=["POST"])
-def payment_webhook():
-    """Webhook reçu de Genius Pay après un paiement"""
-    raw_body = request.get_data(as_text=True)
-    logger.info(f"📨 Webhook reçu! Body: {raw_body[:500]}")
+#@app.route("/api/payment/webhook", methods=["POST"])
+#def payment_webhook():
+ #   """Webhook reçu de Genius Pay après un paiement"""
+   # raw_body = request.get_data(as_text=True)
+   # logger.info(f"📨 Webhook reçu! Body: {raw_body[:500]}")
     
     # Vérifier la signature du webhook
-    if GENIUS_PAY_WEBHOOK_SECRET:
-        signature = request.headers.get('x-webhook-signature', '')
-        timestamp = request.headers.get('x-webhook-timestamp', '')
+    #if GENIUS_PAY_WEBHOOK_SECRET:
+     #   signature = request.headers.get('x-webhook-signature', '')
+      #  timestamp = request.headers.get('x-webhook-timestamp', '')
+       # 
+        #if signature and timestamp:
+         #   expected_signature = hmac.new(
+          #      GENIUS_PAY_WEBHOOK_SECRET.encode(),
+           #     f"{timestamp}.{raw_body}".encode(),
+            #    hashlib.sha256
+            #).hexdigest()
+            #
+            #if not hmac.compare_digest(signature, expected_signature):
+              #  logger.warning("⚠️ Signature webhook invalide")
+               # return jsonify({"error": "Unauthorized"}), 401
+    #
+    #try:
+       # event_data = json.loads(raw_body)
+    #except json.JSONDecodeError:
+       # logger.error("❌ JSON invalide")
+       # return jsonify({"error": "Invalid JSON"}), 400
+    
+    #event = event_data.get("event")
+    #data = event_data.get("data", {})
+    
+    #payment_id = data.get("id")
+    #reference = data.get("reference")
+    #status = data.get("status")
+    #order_id = data.get("metadata", {}).get("order_id")
+    #
+    #if not payment_id or not status:
+    #    return jsonify({"error": "Données manquantes"}), 400
+    
+   # logger.info(f"📨 Webhook: event={event}, status={status}, order_id={order_id}")
+    
+   # conn = get_conn()
+   # cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    
+   # if event == "payment.success" or status == "completed":
+      #  if order_id:
+   #         cur.execute("SELECT * FROM colis WHERE code_suivi=%s", (order_id,))
+     #   else:
+     #       cur.execute("SELECT * FROM colis WHERE payment_id=%s", (payment_id,))
         
-        if signature and timestamp:
-            expected_signature = hmac.new(
-                GENIUS_PAY_WEBHOOK_SECRET.encode(),
-                f"{timestamp}.{raw_body}".encode(),
-                hashlib.sha256
-            ).hexdigest()
+     #   order = cur.fetchone()
+        
+       # if order:
+        #    cur.execute("""
+          #      UPDATE colis 
+          #      SET paiement_statut='confirme', 
+              #      statut='confirme',
+                 #   updated_at=NOW() 
+              #  WHERE id=%s RETURNING *
+           # """, (order["id"],))
+           # updated_order = cur.fetchone()
             
-            if not hmac.compare_digest(signature, expected_signature):
-                logger.warning("⚠️ Signature webhook invalide")
-                return jsonify({"error": "Unauthorized"}), 401
-    
-    try:
-        event_data = json.loads(raw_body)
-    except json.JSONDecodeError:
-        logger.error("❌ JSON invalide")
-        return jsonify({"error": "Invalid JSON"}), 400
-    
-    event = event_data.get("event")
-    data = event_data.get("data", {})
-    
-    payment_id = data.get("id")
-    reference = data.get("reference")
-    status = data.get("status")
-    order_id = data.get("metadata", {}).get("order_id")
-    
-    if not payment_id or not status:
-        return jsonify({"error": "Données manquantes"}), 400
-    
-    logger.info(f"📨 Webhook: event={event}, status={status}, order_id={order_id}")
-    
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    
-    if event == "payment.success" or status == "completed":
-        if order_id:
-            cur.execute("SELECT * FROM colis WHERE code_suivi=%s", (order_id,))
-        else:
-            cur.execute("SELECT * FROM colis WHERE payment_id=%s", (payment_id,))
-        
-        order = cur.fetchone()
-        
-        if order:
-            cur.execute("""
-                UPDATE colis 
-                SET paiement_statut='confirme', 
-                    statut='confirme',
-                    updated_at=NOW() 
-                WHERE id=%s RETURNING *
-            """, (order["id"],))
-            updated_order = cur.fetchone()
+            #add_suivi(conn, order["id"], "confirme", 
+              #       f"✅ Paiement confirmé via Genius Pay (Réf: {reference})", 
+              #       None)
             
-            add_suivi(conn, order["id"], "confirme", 
-                     f"✅ Paiement confirmé via Genius Pay (Réf: {reference})", 
-                     None)
-            
-            cur.execute("""
-                INSERT INTO payments (colis_id, payment_id, reference, amount, currency, status, payment_method, customer_phone, customer_name, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                order["id"],
-                payment_id,
-                reference,
-                data.get("amount"),
-                data.get("currency", "XOF"),
-                status,
-                data.get("payment_method"),
-                data.get("customer", {}).get("phone"),
-                data.get("customer", {}).get("name"),
-                json.dumps(data)
-            ))
-            logger.info(f"✅ Commande {order_id} confirmée")
+            #cur.execute("""
+             #   INSERT INTO payments (colis_id, payment_id, reference, amount, currency, status, payment_method, customer_phone, customer_name, metadata)
+              #  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           # """, (
+             #   order["id"],
+             #   payment_id,
+              #  reference,
+              #  data.get("amount"),
+              #  data.get("currency", "XOF"),
+               # status,
+               # data.get("payment_method"),
+               # data.get("customer", {}).get("phone"),
+               # data.get("customer", {}).get("name"),
+               # json.dumps(data)
+          #  ))
+           # logger.info(f"✅ Commande {order_id} confirmée")
     
-    elif event == "payment.failed" or status == "failed":
-        if order_id:
-            cur.execute("UPDATE colis SET paiement_statut='rejete', statut='annule', updated_at=NOW() WHERE code_suivi=%s RETURNING *", (order_id,))
-        else:
-            cur.execute("UPDATE colis SET paiement_statut='rejete', statut='annule', updated_at=NOW() WHERE payment_id=%s RETURNING *", (payment_id,))
-        order = cur.fetchone()
+   # elif event == "payment.failed" or status == "failed":
+      #  if order_id:
+        #    cur.execute("UPDATE colis SET paiement_statut='rejete', statut='annule', updated_at=NOW() WHERE code_suivi=%s RETURNING *", (order_id,))
+       # else:
+       #     cur.execute("UPDATE colis SET paiement_statut='rejete', statut='annule', updated_at=NOW() WHERE payment_id=%s RETURNING *", (payment_id,))
+       # order = cur.fetchone()
         
-        if order:
-            add_suivi(conn, order["id"], "annule", 
-                     f"❌ Paiement échoué via Genius Pay (Réf: {reference})", 
-                     None)
-            logger.info(f"❌ Commande {order_id} annulée")
+       # if order:
+           # add_suivi(conn, order["id"], "annule", 
+               #      f"❌ Paiement échoué via Genius Pay (Réf: {reference})", 
+             #        None)
+           # logger.info(f"❌ Commande {order_id} annulée")
     
-    conn.commit()
-    cur.close()
-    conn.close()
+   # conn.commit()
+   # cur.close()
+   # conn.close()
     
-    return jsonify({"success": True, "received": True}), 200
+   # return jsonify({"success": True, "received": True}), 200
 
 @app.route("/api/payment/verify/<payment_id>", methods=["GET"])
 def verify_payment(payment_id):
