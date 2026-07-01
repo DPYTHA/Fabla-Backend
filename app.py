@@ -1150,20 +1150,36 @@ def payment_webhook():
     raw_body = request.get_data(as_text=True)
     logger.info(f"📨 Webhook reçu! Body: {raw_body[:500]}")
     
+    signature = request.headers.get('x-webhook-signature', '')
+    timestamp = request.headers.get('x-webhook-timestamp', '')
+    logger.info(f"🔑 Signature reçue: {signature}")
+    logger.info(f"⏰ Timestamp reçu: {timestamp}")
+    
     if GENIUS_PAY_WEBHOOK_SECRET:
-        signature = request.headers.get('x-webhook-signature', '')
-        timestamp = request.headers.get('x-webhook-timestamp', '')
+        logger.info(f"🔑 Secret utilisé: {GENIUS_PAY_WEBHOOK_SECRET[:10]}...")
         
         if signature and timestamp:
-            expected_signature = hmac.new(
+            data = f"{timestamp}.{raw_body}"
+            expected = hmac.new(
                 GENIUS_PAY_WEBHOOK_SECRET.encode(),
-                f"{timestamp}.{raw_body}".encode(),
+                data.encode(),
                 hashlib.sha256
             ).hexdigest()
             
-            if not hmac.compare_digest(signature, expected_signature):
+            logger.info(f"🔑 Signature calculée: {expected}")
+            logger.info(f"🔑 Signature reçue: {signature}")
+            logger.info(f"🔑 Correspondent: {signature == expected}")
+            
+            if not hmac.compare_digest(signature, expected):
                 logger.warning("⚠️ Signature webhook invalide")
-                return jsonify({"error": "Unauthorized"}), 401
+                return jsonify({
+                    "error": "Unauthorized",
+                    "debug": {
+                        "received": signature,
+                        "expected": expected,
+                        "secret_preview": GENIUS_PAY_WEBHOOK_SECRET[:10] + "..."
+                    }
+                }), 401
     
     try:
         event_data = json.loads(raw_body)
@@ -1244,7 +1260,6 @@ def payment_webhook():
     conn.close()
     
     return jsonify({"success": True, "received": True}), 200
-
 @app.route("/api/payment/verify/<payment_id>", methods=["GET"])
 def verify_payment(payment_id):
     """Vérifie le statut d'un paiement"""
