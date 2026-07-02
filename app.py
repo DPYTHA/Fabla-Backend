@@ -913,6 +913,8 @@ def rejeter_paiement(code):
     except Exception as e:
         logger.error(f"❌ Erreur: {str(e)}")
         return jsonify({"error": str(e)}), 500
+    
+
 
 @app.route("/api/admin/colis/<code>/assigner", methods=["PUT"])
 def assigner_livreur(code):
@@ -1284,67 +1286,7 @@ def verify_payment(payment_id):
             "error": result.get("error", "Impossible de vérifier le paiement"),
         }), 500
 
-@app.route("/api/payment/redirect", methods=["GET"])
-def payment_redirect2():
-    """Page de redirection après paiement"""
-    status = request.args.get("status", "pending")
-    order_id = request.args.get("order_id")
-    reference = request.args.get("reference")
-    
-    if status == "success" or status == "completed":
-        return jsonify({
-            "status": "success",
-            "message": "Paiement effectué avec succès",
-            "order_id": order_id,
-            "reference": reference,
-        }), 200
-    elif status == "failed":
-        return jsonify({
-            "status": "failed",
-            "message": "Le paiement a échoué",
-            "order_id": order_id,
-            "reference": reference,
-        }), 200
-    else:
-        return jsonify({
-            "status": "pending",
-            "message": "Paiement en cours de traitement",
-            "order_id": order_id,
-            "reference": reference,
-        }), 200
 
-@app.route("/api/payment/methods", methods=["GET"])
-def get_payment_methods():
-    """Récupère les méthodes de paiement disponibles"""
-    try:
-        response = requests.get(
-            f"{GENIUS_PAY_API_URL}/payment-methods",
-            headers=genius_pay_headers(),
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            return jsonify({
-                "success": True,
-                "methods": response.json().get("methods", []),
-            }), 200
-        else:
-            return jsonify({
-                "success": True,
-                "methods": [
-                    {"id": "wave", "name": "Wave", "icon": "wave"},
-                    {"id": "orange_money", "name": "Orange Money", "icon": "orange"},
-                ],
-            }), 200
-    except Exception as e:
-        logger.warning(f"⚠️ Erreur récupération méthodes: {e}")
-        return jsonify({
-            "success": True,
-            "methods": [
-                {"id": "wave", "name": "Wave", "icon": "wave"},
-                {"id": "orange_money", "name": "Orange Money", "icon": "orange"},
-            ],
-        }), 200
 
 @app.route("/api/payment/status/<order_id>", methods=["GET"])
 def get_payment_status(order_id):
@@ -1383,21 +1325,19 @@ def payment_redirect():
     reference = request.args.get("reference", "")
     telephone = request.args.get("telephone", "")
     
-    # ✅ Construire l'URL de redirection vers l'historique
-    # Utiliser le schéma personnalisé pour l'app React Native
-    redirect_url = f"fabla://history?status={status}&order_id={order_id}&reference={reference}"
+    # ✅ Construire l'URL de deep linking
+    deep_link_url = f"fabla://payment/result?status={status}&order_id={order_id}&reference={reference}"
     
-    # ✅ Si le téléphone est fourni, l'ajouter
     if telephone:
-        redirect_url += f"&telephone={telephone}"
+        deep_link_url += f"&telephone={telephone}"
     
-    # ✅ HTML de redirection automatique
+    # ✅ HTML de redirection vers l'app
     html = f'''
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
-        <meta http-equiv="refresh" content="1;url={redirect_url}">
+        <meta http-equiv="refresh" content="1;url={deep_link_url}">
         <title>Redirection vers FABLA</title>
         <style>
             body {{
@@ -1478,14 +1418,13 @@ def payment_redirect():
                 const reference = params.get('reference') || '';
                 const telephone = params.get('telephone') || '';
                 
-                let url = `fabla://history?status=${{status}}&order_id=${{orderId}}&reference=${{reference}}`;
+                let url = `fabla://payment/result?status=${{status}}&order_id=${{orderId}}&reference=${{reference}}`;
                 if (telephone) {{
                     url += `&telephone=${{telephone}}`;
                 }}
                 window.location.href = url;
             }}
 
-            // ✅ Redirection automatique après 2 secondes
             setTimeout(redirectToApp, 2000);
         </script>
     </body>
@@ -1493,6 +1432,8 @@ def payment_redirect():
     '''
     
     return html, 200
+
+
 # ─────────────────────────────────────────────
 # HEALTH
 # ─────────────────────────────────────────────
