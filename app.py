@@ -33,7 +33,7 @@ GENIUS_PAY_API_SECRET = os.getenv("GENIUS_PAY_API_SECRET")
 GENIUS_PAY_MERCHANT_ID = os.getenv("GENIUS_PAY_MERCHANT_ID")
 GENIUS_PAY_WEBHOOK_SECRET = os.getenv("GENIUS_PAY_WEBHOOK_SECRET")
 GENIUS_PAY_CALLBACK_URL = os.getenv("GENIUS_PAY_CALLBACK_URL", "https://fabla-backend-production.up.railway.app/api/payment/webhook")
-GENIUS_PAY_REDIRECT_URL = os.getenv("GENIUS_PAY_REDIRECT_URL", "fabla://payment/result")
+GENIUS_PAY_REDIRECT_URL = os.getenv("GENIUS_PAY_REDIRECT_URL", "https://fabla-backend-production.up.railway.app/api/payment/redirect")
 # ─────────────────────────────────────────────
 # CONFIG DB
 # ─────────────────────────────────────────────
